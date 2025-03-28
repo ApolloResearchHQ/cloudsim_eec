@@ -11,35 +11,44 @@ static bool migrating = false;
 static unsigned active_machines = 16;
 
 void Scheduler::Init() {
-    // Find the parameters of the clusters
-    // Get the total number of machines
-    // For each machine:
-    //      Get the type of the machine
-    //      Get the memory of the machine
-    //      Get the number of CPUs
-    //      Get if there is a GPU or not
-    // 
-    SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
-    SimOutput("Scheduler::Init(): Initializing scheduler", 1);
-    for(unsigned i = 0; i < active_machines; i++)
-        vms.push_back(VM_Create(LINUX, X86));
-    for(unsigned i = 0; i < active_machines; i++) {
-        machines.push_back(MachineId_t(i));
-    }    
-    for(unsigned i = 0; i < active_machines; i++) {
-        VM_Attach(vms[i], machines[i]);
+    SimOutput("Scheduler::Init(): Initializing Predictive scheduler", 1);
+    
+    taskCount = 0;
+    
+    unsigned total_machines = Machine_GetTotal();
+    
+    for(unsigned i = 0; i < active_machines && i < total_machines; i++) {
+        MachineId_t machineId = MachineId_t(i);
+        MachineInfo_t info = Machine_GetInfo(machineId);
+        
+        cpuTypeMachines[info.cpu].push_back(machineId);
+        
+        machines.push_back(machineId);
+        VMId_t vmId = VM_Create(LINUX, info.cpu);
+        vms.push_back(vmId);
+        
+        vmToMachine[vmId] = machineId;
+        machineToVMs[machineId].push_back(vmId);
+        vmSizes[vmId] = 0; // Start with highest performance (P0)
+        vmAverageResponseTime[vmId] = 0;
+        machineActive[machineId] = true;
+        
+        VM_Attach(vmId, machineId);
     }
-
-    bool dynamic = false;
-    if(dynamic)
-        for(unsigned i = 0; i<4 ; i++)
-            for(unsigned j = 0; j < 8; j++)
-                Machine_SetCorePerformance(MachineId_t(0), j, P3);
-    // Turn off the ARM machines
-    for(unsigned i = 24; i < Machine_GetTotal(); i++)
-        Machine_SetState(MachineId_t(i), S5);
-
-    SimOutput("Scheduler::Init(): VM ids are " + to_string(vms[0]) + " ahd " + to_string(vms[1]), 3);
+    
+    for(unsigned i = active_machines; i < total_machines; i++) {
+        MachineId_t machineId = MachineId_t(i);
+        MachineInfo_t info = Machine_GetInfo(machineId);
+        
+        cpuTypeMachines[info.cpu].push_back(machineId);
+        
+        if(info.s_state != S5) {
+            Machine_SetState(machineId, S5);
+        }
+        machineActive[machineId] = false;
+    }
+    
+    SimOutput("Scheduler::Init(): Created " + to_string(vms.size()) + " VMs across " + to_string(machines.size()) + " machines", 1);
 }
 
 void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
@@ -47,37 +56,95 @@ void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
 }
 
 void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
-    // Get the task parameters
-    //  IsGPUCapable(task_id);
-    //  GetMemory(task_id);
-    //  RequiredVMType(task_id);
-    //  RequiredSLA(task_id);
-    //  RequiredCPUType(task_id);
-    // Decide to attach the task to an existing VM, 
-    //      vm.AddTask(taskid, Priority_T priority); or
-    // Create a new VM, attach the VM to a machine
-    //      VM vm(type of the VM)
-    //      vm.Attach(machine_id);
-    //      vm.AddTask(taskid, Priority_t priority) or
-    // Turn on a machine, create a new VM, attach it to the VM, then add the task
-    //
-    // Turn on a machine, migrate an existing VM from a loaded machine....
-    //
-    // Other possibilities as desired
-    Priority_t priority = (task_id == 0 || task_id == 64)? HIGH_PRIORITY : MID_PRIORITY;
-    if(migrating) {
-        VM_AddTask(vms[0], task_id, priority);
+    taskStartTimes[task_id] = now;
+    taskCount++;
+    
+    CPUType_t requiredCPU = RequiredCPUType(task_id);
+    VMType_t requiredVM = RequiredVMType(task_id);
+    SLAType_t slaType = RequiredSLA(task_id);
+    
+    Priority_t priority = (slaType == SLA0) ? HIGH_PRIORITY : 
+                          (slaType == SLA1) ? MID_PRIORITY : LOW_PRIORITY;
+    
+    VMId_t bestVM = (VMId_t)-1;
+    Time_t bestResponseTime = UINT64_MAX;
+    
+    for (auto& vmId : vms) {
+        try {
+            VMInfo_t vmInfo = VM_GetInfo(vmId);
+            
+            if (vmInfo.cpu == requiredCPU && vmInfo.vm_type == requiredVM) {
+                if (priority == HIGH_PRIORITY) {
+                    if (vmAverageResponseTime[vmId] < bestResponseTime) {
+                        bestVM = vmId;
+                        bestResponseTime = vmAverageResponseTime[vmId];
+                    }
+                } 
+                else if (bestVM == (VMId_t)-1) {
+                    bestVM = vmId;
+                }
+            }
+        } catch (...) {
+            continue;
+        }
     }
-    else {
-        VM_AddTask(vms[task_id % active_machines], task_id, priority);
-    }// Skeleton code, you need to change it according to your algorithm
+    
+    if (bestVM != (VMId_t)-1) {
+        VM_AddTask(bestVM, task_id, priority);
+        return;
+    }
+    
+    for (auto& machineId : cpuTypeMachines[requiredCPU]) {
+        if (!machineActive[machineId]) {
+            MachineInfo_t info = Machine_GetInfo(machineId);
+            if (info.s_state == S5) {
+                Machine_SetState(machineId, S0);
+            }
+            
+            VMId_t newVM = VM_Create(requiredVM, requiredCPU);
+            VM_Attach(newVM, machineId);
+            
+            vms.push_back(newVM);
+            vmToMachine[newVM] = machineId;
+            machineToVMs[machineId].push_back(newVM);
+            vmSizes[newVM] = 0; // Start with highest performance
+            vmAverageResponseTime[newVM] = 0;
+            machineActive[machineId] = true;
+            
+            VM_AddTask(newVM, task_id, priority);
+            return;
+        }
+    }
+    
+    unsigned vmIndex = task_id % vms.size();
+    VM_AddTask(vms[vmIndex], task_id, priority);
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
-    // This method should be called from SchedulerCheck()
-    // SchedulerCheck is called periodically by the simulator to allow you to monitor, make decisions, adjustments, etc.
-    // Unlike the other invocations of the scheduler, this one doesn't report any specific event
-    // Recommendation: Take advantage of this function to do some monitoring and adjustments as necessary
+    static unsigned checkCount = 0;
+    checkCount++;
+    
+    if (checkCount % 5 != 0) {
+        return;
+    }
+    
+    for (auto& machineId : machines) {
+        try {
+            if (!machineActive[machineId]) {
+                continue;
+            }
+            
+            auto vmsIter = machineToVMs.find(machineId);
+            if (vmsIter == machineToVMs.end() || vmsIter->second.empty()) {
+                if (machineId >= 16) {
+                    Machine_SetState(machineId, S5);
+                    machineActive[machineId] = false;
+                }
+            }
+        } catch (...) {
+            continue;
+        }
+    }
 }
 
 void Scheduler::Shutdown(Time_t time) {
@@ -93,10 +160,84 @@ void Scheduler::Shutdown(Time_t time) {
 }
 
 void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
-    // Do any bookkeeping necessary for the data structures
-    // Decide if a machine is to be turned off, slowed down, or VMs to be migrated according to your policy
-    // This is an opportunity to make any adjustments to optimize performance/energy
-    SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 4);
+    auto startTimeIter = taskStartTimes.find(task_id);
+    if (startTimeIter != taskStartTimes.end()) {
+        Time_t startTime = startTimeIter->second;
+        Time_t responseTime = now - startTime;
+        
+        for (auto& vmId : vms) {
+            try {
+                VMInfo_t vmInfo = VM_GetInfo(vmId);
+                bool wasRunningTask = false;
+                
+                for (auto& runningTask : vmInfo.active_tasks) {
+                    if (runningTask == task_id) {
+                        wasRunningTask = true;
+                        break;
+                    }
+                }
+                
+                if (wasRunningTask) {
+                    if (vmResponseTimes[vmId].size() >= 10) {
+                        vmResponseTimes[vmId].pop_front();
+                    }
+                    vmResponseTimes[vmId].push_back(responseTime);
+                    
+                    Time_t totalTime = 0;
+                    for (auto& time : vmResponseTimes[vmId]) {
+                        totalTime += time;
+                    }
+                    vmAverageResponseTime[vmId] = totalTime / vmResponseTimes[vmId].size();
+                    
+                    if (taskCount % 10 == 0 && vmResponseTimes[vmId].size() >= 5) {
+                        Time_t oldAvg = 0, newAvg = 0;
+                        size_t halfSize = vmResponseTimes[vmId].size() / 2;
+                        
+                        for (size_t i = 0; i < halfSize; i++) {
+                            oldAvg += vmResponseTimes[vmId][i];
+                        }
+                        oldAvg /= halfSize;
+                        
+                        for (size_t i = halfSize; i < vmResponseTimes[vmId].size(); i++) {
+                            newAvg += vmResponseTimes[vmId][i];
+                        }
+                        newAvg /= (vmResponseTimes[vmId].size() - halfSize);
+                        
+                        if (newAvg > oldAvg * 1.1) {
+                            if (vmSizes[vmId] > 0) {
+                                vmSizes[vmId]--;
+                                
+                                MachineId_t machineId = vmToMachine[vmId];
+                                MachineInfo_t info = Machine_GetInfo(machineId);
+                                for (unsigned j = 0; j < info.num_cpus; j++) {
+                                    CPUPerformance_t perf = (CPUPerformance_t)vmSizes[vmId];
+                                    Machine_SetCorePerformance(machineId, j, perf);
+                                }
+                            }
+                        } 
+                        else if (newAvg < oldAvg * 0.9) {
+                            if (vmSizes[vmId] < 3) {
+                                vmSizes[vmId]++;
+                                
+                                MachineId_t machineId = vmToMachine[vmId];
+                                MachineInfo_t info = Machine_GetInfo(machineId);
+                                for (unsigned j = 0; j < info.num_cpus; j++) {
+                                    CPUPerformance_t perf = (CPUPerformance_t)vmSizes[vmId];
+                                    Machine_SetCorePerformance(machineId, j, perf);
+                                }
+                            }
+                        }
+                    }
+                    
+                    break;
+                }
+            } catch (...) {
+                continue;
+            }
+        }
+        
+        taskStartTimes.erase(startTimeIter);
+    }
 }
 
 // Public interface below
