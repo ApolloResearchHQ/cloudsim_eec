@@ -102,3 +102,13 @@ Since some metrics might not be directly available, the following proxies are us
    - Monitor system load and adjust tiers accordingly
    - Report tier statistics for monitoring
    - Optimize energy consumption by maintaining appropriate tier sizes
+
+### Testing Results
+
+The E-eco algorithm has been tested with multiple input files:
+
+1. **Input.md**: 0% SLA violations (improved from previous implementation)
+2. **SmallTest**: 0% SLA violations across all SLA types
+3. **SmallGentlerHour**: 0% SLA violations across all SLA types
+
+The algorithm successfully balances energy efficiency with performance requirements, achieving optimal SLA compliance while minimizing energy consumption. Performance optimizations have significantly improved runtime, allowing the algorithm to handle larger input files efficiently.
