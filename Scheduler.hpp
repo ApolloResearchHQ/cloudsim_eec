@@ -35,7 +35,7 @@ private:
     
     // Helper methods
     float CalculateTaskLoadFactor(TaskId_t taskId);
-    VMId_t FindVMForMachine(MachineId_t machineId, VMType_t vmType = LINUX);
+    VMId_t FindVMForMachine(MachineId_t machineId, VMType_t vmType = LINUX, CPUType_t cpuType = X86);
     void CheckAndTurnOffUnusedMachines();
     vector<pair<MachineId_t, float>> GetSortedMachinesByUtilization();
     bool MigrateTask(TaskId_t taskId, MachineId_t targetMachineId);

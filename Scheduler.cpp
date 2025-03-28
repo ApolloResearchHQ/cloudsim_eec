@@ -63,16 +63,31 @@ float Scheduler::CalculateTaskLoadFactor(TaskId_t taskId) {
     return 1.0f; // If no suitable machine found, task has high load factor
 }
 
-VMId_t Scheduler::FindVMForMachine(MachineId_t machineId, VMType_t vmType) {
+VMId_t Scheduler::FindVMForMachine(MachineId_t machineId, VMType_t vmType, CPUType_t cpuType) {
     if(machineToVMMap.find(machineId) != machineToVMMap.end()) {
-        return machineToVMMap[machineId];
+        VMId_t existingVM = machineToVMMap[machineId];
+        VMInfo_t vmInfo = VM_GetInfo(existingVM);
+        
+        if(vmInfo.cpu == cpuType) {
+            return existingVM;
+        } else {
+            SimOutput("Scheduler::FindVMForMachine(): Existing VM has incompatible CPU type. Creating new VM.", 2);
+        }
     }
     
     MachineInfo_t info = Machine_GetInfo(machineId);
-    SimOutput("Scheduler::FindVMForMachine(): Creating new VM with CPU type " + to_string(info.cpu) + 
+    SimOutput("Scheduler::FindVMForMachine(): Creating new VM with CPU type " + to_string(cpuType) + 
               " and VM type " + to_string(vmType) + " for machine " + to_string(machineId), 2);
     
-    VMId_t newVM = VM_Create(vmType, info.cpu);
+    if (info.cpu != cpuType) {
+        SimOutput("Scheduler::FindVMForMachine(): Machine " + to_string(machineId) + 
+                  " has CPU type " + to_string(info.cpu) + 
+                  " which is incompatible with required CPU type " + to_string(cpuType), 1);
+        
+        cpuType = info.cpu;
+    }
+    
+    VMId_t newVM = VM_Create(vmType, cpuType);
     VM_Attach(newVM, machineId);
     
     machineToVMMap[machineId] = newVM;
@@ -126,9 +141,10 @@ bool Scheduler::MigrateTask(TaskId_t taskId, MachineId_t targetMachineId) {
     
     MachineId_t sourceMachineId = taskToMachineMap[taskId];
     
-    VMId_t sourceVMId = FindVMForMachine(sourceMachineId);
     VMType_t requiredVM = RequiredVMType(taskId);
-    VMId_t targetVMId = FindVMForMachine(targetMachineId, requiredVM);
+    CPUType_t requiredCPU = RequiredCPUType(taskId);
+    VMId_t sourceVMId = FindVMForMachine(sourceMachineId, requiredVM, requiredCPU);
+    VMId_t targetVMId = FindVMForMachine(targetMachineId, requiredVM, requiredCPU);
     
     Priority_t priority = (taskId == 0 || taskId == 64) ? HIGH_PRIORITY : MID_PRIORITY;
     
@@ -185,7 +201,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         float machineUtil = CalculateMachineUtilization(machine);
         
         if(machineUtil + taskLoadFactor < 1.0f && info.memory_used + taskMemory <= info.memory_size) {
-            VMId_t vmId = FindVMForMachine(machine, requiredVM);
+            VMId_t vmId = FindVMForMachine(machine, requiredVM, requiredCPU);
             
             try {
                 VM_AddTask(vmId, task_id, priority);
@@ -339,53 +355,58 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
     float taskLoadFactor = CalculateTaskLoadFactor(task_id);
     machineUtilization[completedTaskMachine] = max(0.0f, machineUtilization[completedTaskMachine] - taskLoadFactor);
     
-    vector<pair<MachineId_t, float>> sortedMachines = GetSortedMachinesByUtilization();
+    unsigned activeCount = 0;
+    for(auto& machine : machines) {
+        MachineInfo_t info = Machine_GetInfo(machine);
+        if(info.s_state != S5) {
+            activeCount++;
+        }
+    }
     
-    if(sortedMachines.size() >= 2) {
-        size_t midPoint = sortedMachines.size() / 2;
+    if(activeCount > 4) {
+        vector<pair<MachineId_t, float>> sortedMachines = GetSortedMachinesByUtilization();
         
-        for(size_t i = 0; i < midPoint; i++) {
-            MachineId_t lowUtilMachine = sortedMachines[i].first;
+        if(sortedMachines.size() >= 2) {
+            MachineId_t lowUtilMachine = sortedMachines[0].first;
             
-            if(sortedMachines[i].second <= 0.0f) {
-                continue;
-            }
-            
-            VMId_t vmId = FindVMForMachine(lowUtilMachine);
-            VMInfo_t vmInfo = VM_GetInfo(vmId);
-            
-            for(auto& taskOnMachine : vmInfo.active_tasks) {
-                CPUType_t requiredCPU = RequiredCPUType(taskOnMachine);
-                float taskLoad = CalculateTaskLoadFactor(taskOnMachine);
+            if(sortedMachines[0].second > 0.0f) {
+                VMId_t vmId = FindVMForMachine(lowUtilMachine);
+                VMInfo_t vmInfo = VM_GetInfo(vmId);
                 
-                for(size_t j = midPoint; j < sortedMachines.size(); j++) {
-                    MachineId_t highUtilMachine = sortedMachines[j].first;
-                    MachineInfo_t highUtilInfo = Machine_GetInfo(highUtilMachine);
+                if(!vmInfo.active_tasks.empty()) {
+                    TaskId_t taskToMigrate = vmInfo.active_tasks[0];
+                    CPUType_t requiredCPU = RequiredCPUType(taskToMigrate);
+                    float taskLoad = CalculateTaskLoadFactor(taskToMigrate);
                     
-                    if(highUtilInfo.cpu != requiredCPU) {
-                        continue;
-                    }
-                    
-                    float highUtilization = sortedMachines[j].second;
-                    unsigned taskMemory = GetTaskMemory(taskOnMachine);
-                    
-                    if(highUtilization + taskLoad < 1.0f && 
-                       highUtilInfo.memory_used + taskMemory <= highUtilInfo.memory_size) {
-                        if(MigrateTask(taskOnMachine, highUtilMachine)) {
-                            machineUtilization[lowUtilMachine] -= taskLoad;
-                            machineUtilization[highUtilMachine] += taskLoad;
-                            
-                            taskToMachineMap[taskOnMachine] = highUtilMachine;
-                            
-                            SimOutput("Scheduler::TaskComplete(): Migrated task " + to_string(taskOnMachine) + 
-                                     " from machine " + to_string(lowUtilMachine) + 
-                                     " to machine " + to_string(highUtilMachine), 2);
-                            
-                            VMInfo_t updatedVmInfo = VM_GetInfo(vmId);
-                            if(updatedVmInfo.active_tasks.empty()) {
-                                Machine_SetState(lowUtilMachine, S5);
-                                SimOutput("Scheduler::TaskComplete(): Turned off machine " + 
-                                         to_string(lowUtilMachine) + " after migrating all tasks", 2);
+                    for(int j = sortedMachines.size() - 1; j > 0; j--) {
+                        MachineId_t highUtilMachine = sortedMachines[j].first;
+                        MachineInfo_t highUtilInfo = Machine_GetInfo(highUtilMachine);
+                        
+                        if(highUtilInfo.cpu != requiredCPU) {
+                            continue;
+                        }
+                        
+                        float highUtilization = sortedMachines[j].second;
+                        unsigned taskMemory = GetTaskMemory(taskToMigrate);
+                        
+                        if(highUtilization + taskLoad < 1.0f && 
+                           highUtilInfo.memory_used + taskMemory <= highUtilInfo.memory_size) {
+                            if(MigrateTask(taskToMigrate, highUtilMachine)) {
+                                machineUtilization[lowUtilMachine] -= taskLoad;
+                                machineUtilization[highUtilMachine] += taskLoad;
+                                
+                                taskToMachineMap[taskToMigrate] = highUtilMachine;
+                                
+                                SimOutput("Scheduler::TaskComplete(): Migrated task " + to_string(taskToMigrate) + 
+                                         " from machine " + to_string(lowUtilMachine) + 
+                                         " to machine " + to_string(highUtilMachine), 2);
+                                
+                                VMInfo_t updatedVmInfo = VM_GetInfo(vmId);
+                                if(updatedVmInfo.active_tasks.empty()) {
+                                    Machine_SetState(lowUtilMachine, S5);
+                                    SimOutput("Scheduler::TaskComplete(): Turned off machine " + 
+                                             to_string(lowUtilMachine) + " after migrating all tasks", 2);
+                                }
                                 break;
                             }
                         }
