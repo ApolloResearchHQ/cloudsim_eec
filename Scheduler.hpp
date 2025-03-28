@@ -31,7 +31,7 @@ private:
     bool initialized;                                        // Flag to check if sorted once
     
     void BuildEnergySortedMachineList();
-    VMId_t FindVMForMachine(MachineId_t machineId);
+    VMId_t FindVMForMachine(MachineId_t machineId, VMType_t vmType = LINUX);
     void CheckAndTurnOffUnusedMachines();
     MachineId_t FindMachineForTask(TaskId_t taskId);
     TaskId_t FindSmallestTaskOnMachine(MachineId_t machineId);

@@ -51,15 +51,20 @@ void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
 }
 
 void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
-    SimOutput("Scheduler::NewTask(): Processing new task " + to_string(task_id), 3);
+    SimOutput("Scheduler::NewTask(): Processing new task " + to_string(task_id), 1);
     
     if (!initialized) {
         BuildEnergySortedMachineList();
     }
     
     Priority_t priority = (task_id == 0 || task_id == 64) ? HIGH_PRIORITY : MID_PRIORITY;
-    
     unsigned taskMemory = GetTaskMemory(task_id);
+    CPUType_t requiredCPU = RequiredCPUType(task_id);
+    VMType_t requiredVM = RequiredVMType(task_id);
+    
+    SimOutput("Scheduler::NewTask(): Task " + to_string(task_id) + 
+              " requires CPU type " + to_string(requiredCPU) + 
+              " and VM type " + to_string(requiredVM), 0);
     
     bool allocated = false;
     
@@ -71,22 +76,34 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
             continue;
         }
         
-        VMId_t vmId = FindVMForMachine(machineId);
+        if (info.cpu != requiredCPU) {
+            SimOutput("Scheduler::NewTask(): Machine " + to_string(machineId) + 
+                      " has incompatible CPU type " + to_string(info.cpu) + 
+                      " for task " + to_string(task_id), 1);
+            continue;
+        }
+        
+        VMId_t vmId = FindVMForMachine(machineId, requiredVM);
         
         if (info.memory_used + taskMemory <= info.memory_size) {
-            VM_AddTask(vmId, task_id, priority);
-            machineUtilization[machineId]++; // Increment utilization count
-            allocated = true;
-            
-            SimOutput("Scheduler::NewTask(): Allocated task " + to_string(task_id) + 
-                      " to machine " + to_string(machineId), 3);
-            break;
+            try {
+                VM_AddTask(vmId, task_id, priority);
+                machineUtilization[machineId]++; // Increment utilization count
+                allocated = true;
+                
+                SimOutput("Scheduler::NewTask(): Allocated task " + to_string(task_id) + 
+                          " to machine " + to_string(machineId), 0);
+                break;
+            } catch (const exception& e) {
+                SimOutput("Scheduler::NewTask(): Exception when adding task: " + string(e.what()), 0);
+                continue; // Try next machine
+            }
         }
     }
     
     if (!allocated) {
         SimOutput("Scheduler::NewTask(): Could not allocate task " + to_string(task_id) + 
-                  " - SLA violation", 1);
+                  " - SLA violation", 0);
     }
     
     CheckAndTurnOffUnusedMachines();
@@ -143,23 +160,40 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
             MachineId_t leastUtilizedMachine = sortedByUtilization[0].first;
             TaskId_t smallestTask = FindSmallestTaskOnMachine(leastUtilizedMachine);
             
-            MachineId_t highlyUtilizedMachine = sortedByUtilization[midPoint].first;
-            
             if (smallestTask != (TaskId_t)-1) {
-                VMId_t sourceVM = FindVMForMachine(leastUtilizedMachine);
-                VMId_t destVM = FindVMForMachine(highlyUtilizedMachine);
+                CPUType_t requiredCPU = RequiredCPUType(smallestTask);
                 
-                VM_RemoveTask(sourceVM, smallestTask);
+                MachineId_t highlyUtilizedMachine = (MachineId_t)-1;
                 
-                Priority_t priority = (smallestTask == 0 || smallestTask == 64) ? HIGH_PRIORITY : MID_PRIORITY;
-                VM_AddTask(destVM, smallestTask, priority);
+                for (size_t i = midPoint; i < sortedByUtilization.size(); i++) {
+                    MachineId_t candidateMachine = sortedByUtilization[i].first;
+                    MachineInfo_t info = Machine_GetInfo(candidateMachine);
+                    
+                    if (info.cpu == requiredCPU) {
+                        highlyUtilizedMachine = candidateMachine;
+                        break;
+                    }
+                }
                 
-                machineUtilization[leastUtilizedMachine]--;
-                machineUtilization[highlyUtilizedMachine]++;
-                
-                SimOutput("Scheduler::TaskComplete(): Migrated task " + to_string(smallestTask) + 
-                          " from machine " + to_string(leastUtilizedMachine) + 
-                          " to machine " + to_string(highlyUtilizedMachine), 3);
+                if (highlyUtilizedMachine != (MachineId_t)-1) {
+                    VMId_t sourceVM = FindVMForMachine(leastUtilizedMachine);
+                    VMId_t destVM = FindVMForMachine(highlyUtilizedMachine);
+                    
+                    VM_RemoveTask(sourceVM, smallestTask);
+                    
+                    Priority_t priority = (smallestTask == 0 || smallestTask == 64) ? HIGH_PRIORITY : MID_PRIORITY;
+                    VM_AddTask(destVM, smallestTask, priority);
+                    
+                    machineUtilization[leastUtilizedMachine]--;
+                    machineUtilization[highlyUtilizedMachine]++;
+                    
+                    SimOutput("Scheduler::TaskComplete(): Migrated task " + to_string(smallestTask) + 
+                              " from machine " + to_string(leastUtilizedMachine) + 
+                              " to machine " + to_string(highlyUtilizedMachine), 3);
+                } else {
+                    SimOutput("Scheduler::TaskComplete(): Could not find compatible machine for task " + 
+                              to_string(smallestTask) + " with CPU type " + to_string(requiredCPU), 3);
+                }
             }
         }
         
@@ -184,14 +218,18 @@ void Scheduler::BuildEnergySortedMachineList() {
     initialized = true;
 }
 
-VMId_t Scheduler::FindVMForMachine(MachineId_t machineId) {
+VMId_t Scheduler::FindVMForMachine(MachineId_t machineId, VMType_t vmType) {
     for (unsigned i = 0; i < machines.size(); i++) {
         if (machines[i] == machineId) {
             return vms[i];
         }
     }
     
-    VMId_t newVM = VM_Create(LINUX, Machine_GetInfo(machineId).cpu);
+    MachineInfo_t info = Machine_GetInfo(machineId);
+    SimOutput("Scheduler::FindVMForMachine(): Creating new VM with CPU type " + to_string(info.cpu) + 
+              " and VM type " + to_string(vmType) + " for machine " + to_string(machineId), 0);
+    
+    VMId_t newVM = VM_Create(vmType, info.cpu);
     VM_Attach(newVM, machineId);
     return newVM;
 }
