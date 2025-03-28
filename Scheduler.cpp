@@ -110,12 +110,15 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
 }
 
 void Scheduler::PeriodicCheck(Time_t now) {
-    SimOutput("Scheduler::PeriodicCheck(): Running periodic check at time " + to_string(now), 4);
+    SimOutput("Scheduler::PeriodicCheck(): Running periodic check at time " + to_string(now), 0);
     
-    BuildEnergySortedMachineList();
+    static int check_count = 0;
+    if (check_count++ % 10 == 0) {
+        BuildEnergySortedMachineList();
+    }
     
-    SimOutput("Scheduler::PeriodicCheck(): Total machines: " + to_string(machines.size()), 4);
-    SimOutput("Scheduler::PeriodicCheck(): Total energy: " + to_string(Machine_GetClusterEnergy()), 4);
+    SimOutput("Scheduler::PeriodicCheck(): Total machines: " + to_string(machines.size()), 0);
+    SimOutput("Scheduler::PeriodicCheck(): Total energy: " + to_string(Machine_GetClusterEnergy()), 0);
     
     CheckAndTurnOffUnusedMachines();
 }
@@ -134,7 +137,7 @@ void Scheduler::Shutdown(Time_t time) {
 }
 
 void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
-    SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 4);
+    SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 0);
     
     MachineId_t taskMachine = FindMachineForTask(task_id);
     
@@ -203,6 +206,13 @@ void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
 
 
 void Scheduler::BuildEnergySortedMachineList() {
+    static int rebuild_count = 0;
+    if (!energySortedMachines.empty() && rebuild_count++ % 5 != 0) {
+        return;
+    }
+    
+    SimOutput("Scheduler::BuildEnergySortedMachineList(): Rebuilding energy sorted machine list", 0);
+    
     energySortedMachines.clear();
     
     for(unsigned i = 0; i < machines.size(); i++) {
@@ -293,17 +303,17 @@ TaskId_t Scheduler::FindSmallestTaskOnMachine(MachineId_t machineId) {
 static Scheduler Scheduler;
 
 void InitScheduler() {
-    SimOutput("InitScheduler(): Initializing scheduler", 4);
+    SimOutput("InitScheduler(): Initializing scheduler", 0);
     Scheduler.Init();
 }
 
 void HandleNewTask(Time_t time, TaskId_t task_id) {
-    SimOutput("HandleNewTask(): Received new task " + to_string(task_id) + " at time " + to_string(time), 4);
+    SimOutput("HandleNewTask(): Received new task " + to_string(task_id) + " at time " + to_string(time), 0);
     Scheduler.NewTask(time, task_id);
 }
 
 void HandleTaskCompletion(Time_t time, TaskId_t task_id) {
-    SimOutput("HandleTaskCompletion(): Task " + to_string(task_id) + " completed at time " + to_string(time), 4);
+    SimOutput("HandleTaskCompletion(): Task " + to_string(task_id) + " completed at time " + to_string(time), 0);
     Scheduler.TaskComplete(time, task_id);
 }
 
@@ -314,14 +324,14 @@ void MemoryWarning(Time_t time, MachineId_t machine_id) {
 
 void MigrationDone(Time_t time, VMId_t vm_id) {
     // The function is called on to alert you that migration is complete
-    SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " was completed at time " + to_string(time), 4);
+    SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " was completed at time " + to_string(time), 0);
     Scheduler.MigrationComplete(time, vm_id);
     migrating = false;
 }
 
 void SchedulerCheck(Time_t time) {
     // This function is called periodically by the simulator, no specific event
-    SimOutput("SchedulerCheck(): SchedulerCheck() called at " + to_string(time), 4);
+    SimOutput("SchedulerCheck(): SchedulerCheck() called at " + to_string(time), 0);
     Scheduler.PeriodicCheck(time);
 }
 
@@ -333,7 +343,7 @@ void SimulationComplete(Time_t time) {
     cout << "SLA2: " << GetSLAReport(SLA2) << "%" << endl;     // SLA3 do not have SLA violation issues
     cout << "Total Energy " << Machine_GetClusterEnergy() << "KW-Hour" << endl;
     cout << "Simulation run finished in " << double(time)/1000000 << " seconds" << endl;
-    SimOutput("SimulationComplete(): Simulation finished at time " + to_string(time), 4);
+    SimOutput("SimulationComplete(): Simulation finished at time " + to_string(time), 1);
     
     Scheduler.Shutdown(time);
 }
