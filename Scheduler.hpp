@@ -9,6 +9,8 @@
 #define Scheduler_hpp
 
 #include <vector>
+#include <map>
+#include <algorithm>
 
 #include "Interfaces.h"
 
@@ -24,6 +26,15 @@ public:
 private:
     vector<VMId_t> vms;
     vector<MachineId_t> machines;
+    vector<pair<MachineId_t, uint64_t>> energySortedMachines; // Machines sorted by energy consumption
+    map<MachineId_t, unsigned> machineUtilization;           // Track machine utilization
+    bool initialized;                                        // Flag to check if sorted once
+    
+    void BuildEnergySortedMachineList();
+    VMId_t FindVMForMachine(MachineId_t machineId);
+    void CheckAndTurnOffUnusedMachines();
+    MachineId_t FindMachineForTask(TaskId_t taskId);
+    TaskId_t FindSmallestTaskOnMachine(MachineId_t machineId);
 };
 
 
