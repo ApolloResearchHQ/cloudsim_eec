@@ -224,9 +224,20 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     }
     
     if(!found && !vms.empty()) {
-        VM_AddTask(vms[0], task_id, priority);
-        found = true;
-        SimOutput("Scheduler::NewTask(): Added task " + to_string(task_id) + " to VM " + to_string(vms[0]) + " as absolute last resort", 3);
+        for(size_t i = 0; i < vms.size(); i++) {
+            VMInfo_t vm_info = VM_GetInfo(vms[i]);
+            
+            if(vm_info.cpu == cpu_type) {
+                VM_AddTask(vms[i], task_id, priority);
+                found = true;
+                SimOutput("Scheduler::NewTask(): Added task " + to_string(task_id) + " to VM " + to_string(vms[i]) + " with CPU match as last resort", 3);
+                break;
+            }
+        }
+        
+        if(!found) {
+            SimOutput("Scheduler::NewTask(): No VM with compatible CPU found for task " + to_string(task_id), 0);
+        }
     }
     
     if(!found) {
