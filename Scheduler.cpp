@@ -162,78 +162,36 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     }
     
     if(!found) {
-        VMId_t new_vm = VM_Create(vm_type, cpu_type);
+        bool compatible_machine_found = false;
+        unsigned compatible_machine_idx = 0;
         
         for(unsigned i = 0; i < Machine_GetTotal(); i++) {
             MachineInfo_t machine = Machine_GetInfo(MachineId_t(i));
             
             if(machine.cpu == cpu_type && (!gpu_capable || machine.gpus) && machine.memory_size >= memory) {
-                VM_Attach(new_vm, MachineId_t(i));
-                
-                switch(vm_type) {
-                    case LINUX:
-                        linux.push_back(new_vm);
-                        break;
-                    case LINUX_RT:
-                        linux_rt.push_back(new_vm);
-                        break;
-                    case WIN:
-                        win.push_back(new_vm);
-                        break;
-                    case AIX:
-                        aix.push_back(new_vm);
-                        break;
-                    default:
-                        break;
-                }
-                
-                vms.push_back(new_vm);
-                
-                VM_AddTask(new_vm, task_id, priority);
-                found = true;
-                SimOutput("Scheduler::NewTask(): Created new VM for task " + to_string(task_id) + " on machine " + to_string(i) + " with CPU match", 3);
+                compatible_machine_found = true;
+                compatible_machine_idx = i;
                 break;
             }
         }
         
-        if(!found) {
+        if(!compatible_machine_found) {
             for(unsigned i = 0; i < Machine_GetTotal(); i++) {
                 MachineInfo_t machine = Machine_GetInfo(MachineId_t(i));
                 
                 if((!gpu_capable || machine.gpus) && machine.memory_size >= memory) {
-                    VM_Attach(new_vm, MachineId_t(i));
-                    
-                    switch(vm_type) {
-                        case LINUX:
-                            linux.push_back(new_vm);
-                            break;
-                        case LINUX_RT:
-                            linux_rt.push_back(new_vm);
-                            break;
-                        case WIN:
-                            win.push_back(new_vm);
-                            break;
-                        case AIX:
-                            aix.push_back(new_vm);
-                            break;
-                        default:
-                            break;
-                    }
-                    
-                    vms.push_back(new_vm);
-                    
-                    VM_AddTask(new_vm, task_id, priority);
-                    found = true;
-                    SimOutput("Scheduler::NewTask(): Created new VM for task " + to_string(task_id) + " on machine " + to_string(i) + " despite CPU mismatch", 3);
+                    compatible_machine_found = true;
+                    compatible_machine_idx = i;
                     break;
                 }
             }
         }
         
-        if(!found && Machine_GetTotal() > 0) {
-            unsigned machine_idx = 0;
+        if(compatible_machine_found) {
+            MachineInfo_t machine = Machine_GetInfo(MachineId_t(compatible_machine_idx));
             
-            VM_Attach(new_vm, MachineId_t(machine_idx));
+            VMId_t new_vm = VM_Create(vm_type, machine.cpu);
+            VM_Attach(new_vm, MachineId_t(compatible_machine_idx));
             
             switch(vm_type) {
                 case LINUX:
@@ -256,7 +214,12 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
             
             VM_AddTask(new_vm, task_id, priority);
             found = true;
-            SimOutput("Scheduler::NewTask(): Created new VM for task " + to_string(task_id) + " on machine " + to_string(machine_idx) + " as last resort", 3);
+            
+            if(machine.cpu == cpu_type) {
+                SimOutput("Scheduler::NewTask(): Created new VM for task " + to_string(task_id) + " on machine " + to_string(compatible_machine_idx) + " with CPU match", 3);
+            } else {
+                SimOutput("Scheduler::NewTask(): Created new VM for task " + to_string(task_id) + " on machine " + to_string(compatible_machine_idx) + " with CPU adaptation", 3);
+            }
         }
     }
     
